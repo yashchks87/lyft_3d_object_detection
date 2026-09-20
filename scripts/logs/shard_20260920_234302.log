@@ -1,0 +1,52 @@
+2026-09-20 23:43:09,922 INFO MainProcess Args: {'data_root': PosixPath('/Volumes/daai_ke_team/default/images/lyft_3d_object_detection/extracted'), 'out_root': PosixPath('/Volumes/daai_ke_team/default/images/lyft_3d_object_detection/mds_shards_smoketest'), 'staging_root': PosixPath('/local_disk0/lyft_mds_staging'), 'splits': 'train,val,test', 'val_frac': 0.15, 'num_workers': 8, 'samples_per_group': 8, 'size_limit': '128mb', 'compression': None, 'limit': 24, 'terminate_cluster': False}
+2026-09-20 23:43:10,054 INFO MainProcess Loading sensor.json (0.0 MB)
+2026-09-20 23:43:10,069 INFO MainProcess Loading calibrated_sensor.json (0.1 MB)
+2026-09-20 23:43:10,086 INFO MainProcess Loading ego_pose.json (51.3 MB)
+2026-09-20 23:43:10,944 INFO MainProcess Loading scene.json (0.1 MB)
+2026-09-20 23:43:10,961 INFO MainProcess Loading sample.json (7.8 MB)
+2026-09-20 23:43:11,100 INFO MainProcess Loading sample_data.json (125.0 MB)
+2026-09-20 23:43:12,149 INFO MainProcess Loading category.json (0.0 MB)
+2026-09-20 23:43:12,165 INFO MainProcess Loading instance.json (6.9 MB)
+2026-09-20 23:43:12,213 INFO MainProcess Loading sample_annotation.json (481.6 MB)
+2026-09-20 23:43:33,915 INFO MainProcess Built 22680 tasks for raw split 'train' (0 skipped)
+2026-09-20 23:43:35,061 INFO MainProcess Scene split: 150 train scenes / 30 val scenes -> 18900 train / 3780 val samples
+2026-09-20 23:43:35,204 INFO MainProcess Loading sensor.json (0.0 MB)
+2026-09-20 23:43:35,220 INFO MainProcess Loading calibrated_sensor.json (0.1 MB)
+2026-09-20 23:43:35,241 INFO MainProcess Loading ego_pose.json (63.3 MB)
+2026-09-20 23:43:36,368 INFO MainProcess Loading scene.json (0.1 MB)
+2026-09-20 23:43:36,385 INFO MainProcess Loading sample.json (9.5 MB)
+2026-09-20 23:43:36,463 INFO MainProcess Loading sample_data.json (145.2 MB)
+2026-09-20 23:43:40,344 INFO MainProcess Built 27468 tasks for raw split 'test' (0 skipped)
+2026-09-20 23:43:41,061 INFO MainProcess Processing 72 samples in 9 groups with 8 workers
+2026-09-20 23:43:49,979 INFO ForkProcess-8 [val/group_00001] wrote 8 samples (0.5M points) in 1.3s
+2026-09-20 23:43:49,979 INFO MainProcess Progress: 1/9 groups (0.7 min elapsed, ETA 5.3 min)
+2026-09-20 23:43:50,002 INFO ForkProcess-7 [val/group_00000] wrote 8 samples (0.5M points) in 1.3s
+2026-09-20 23:43:50,003 INFO MainProcess Progress: 2/9 groups (0.7 min elapsed, ETA 2.3 min)
+2026-09-20 23:43:50,025 INFO ForkProcess-5 [train/group_00001] wrote 8 samples (0.5M points) in 1.4s
+2026-09-20 23:43:50,026 INFO MainProcess Progress: 3/9 groups (0.7 min elapsed, ETA 1.3 min)
+2026-09-20 23:43:50,032 INFO ForkProcess-4 [train/group_00000] wrote 8 samples (0.5M points) in 1.2s
+2026-09-20 23:43:50,032 INFO MainProcess Progress: 4/9 groups (0.7 min elapsed, ETA 0.8 min)
+2026-09-20 23:43:50,159 INFO ForkProcess-6 [train/group_00002] wrote 8 samples (0.5M points) in 1.6s
+2026-09-20 23:43:50,160 INFO MainProcess Progress: 5/9 groups (0.7 min elapsed, ETA 0.5 min)
+2026-09-20 23:43:50,811 INFO ForkProcess-2 [test/group_00001] wrote 8 samples (0.6M points) in 2.1s
+2026-09-20 23:43:50,812 INFO MainProcess Progress: 6/9 groups (0.7 min elapsed, ETA 0.3 min)
+2026-09-20 23:43:50,893 INFO ForkProcess-1 [test/group_00000] wrote 8 samples (0.6M points) in 2.3s
+2026-09-20 23:43:50,893 INFO MainProcess Progress: 7/9 groups (0.7 min elapsed, ETA 0.2 min)
+2026-09-20 23:43:50,955 INFO ForkProcess-8 [val/group_00002] wrote 8 samples (0.5M points) in 1.0s
+2026-09-20 23:43:50,955 INFO MainProcess Progress: 8/9 groups (0.7 min elapsed, ETA 0.1 min)
+2026-09-20 23:43:50,997 INFO ForkProcess-3 [test/group_00002] wrote 8 samples (0.6M points) in 2.2s
+2026-09-20 23:43:50,997 INFO MainProcess Progress: 9/9 groups (0.7 min elapsed, ETA 0.0 min)
+2026-09-20 23:43:57,991 WARNING MainProcess Directory /Volumes/daai_ke_team/default/images/lyft_3d_object_detection/mds_shards_smoketest/train exists and not empty. But continue to mkdir since exist_ok is set to be True.
+2026-09-20 23:43:57,997 WARNING MainProcess A temporary folder /tmp/tmpl6oh97cv is created to store index files
+2026-09-20 23:43:58,666 INFO MainProcess [train] merged 3 group indexes -> 24 samples total
+2026-09-20 23:43:58,947 WARNING MainProcess Directory /Volumes/daai_ke_team/default/images/lyft_3d_object_detection/mds_shards_smoketest/val exists and not empty. But continue to mkdir since exist_ok is set to be True.
+2026-09-20 23:43:58,953 WARNING MainProcess A temporary folder /tmp/tmpsx4py931 is created to store index files
+2026-09-20 23:43:59,583 INFO MainProcess [val] merged 3 group indexes -> 24 samples total
+2026-09-20 23:43:59,725 WARNING MainProcess Directory /Volumes/daai_ke_team/default/images/lyft_3d_object_detection/mds_shards_smoketest/test exists and not empty. But continue to mkdir since exist_ok is set to be True.
+2026-09-20 23:43:59,731 WARNING MainProcess A temporary folder /tmp/tmpg9qjov6g is created to store index files
+2026-09-20 23:44:05,402 INFO MainProcess [test] merged 3 group indexes -> 24 samples total
+2026-09-20 23:44:06,427 INFO MainProcess [train] verification OK: 24 samples, spot-checked 5 records
+2026-09-20 23:44:07,295 INFO MainProcess [val] verification OK: 24 samples, spot-checked 5 records
+2026-09-20 23:44:08,277 INFO MainProcess [test] verification OK: 24 samples, spot-checked 5 records
+2026-09-20 23:44:08,412 INFO MainProcess Wrote /Volumes/daai_ke_team/default/images/lyft_3d_object_detection/mds_shards_smoketest/dataset_meta.json
+2026-09-20 23:44:08,413 INFO MainProcess ALL DONE in 1.0 min. Split sizes: {'train': 24, 'val': 24, 'test': 24}

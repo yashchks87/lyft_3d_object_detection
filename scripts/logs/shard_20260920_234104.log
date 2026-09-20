@@ -1,0 +1,141 @@
+2026-09-20 23:41:12,221 INFO MainProcess Args: {'data_root': PosixPath('/Volumes/daai_ke_team/default/images/lyft_3d_object_detection/extracted'), 'out_root': PosixPath('/Volumes/daai_ke_team/default/images/lyft_3d_object_detection/mds_shards_smoketest'), 'staging_root': PosixPath('/local_disk0/lyft_mds_staging'), 'splits': 'train,val,test', 'val_frac': 0.15, 'num_workers': 8, 'samples_per_group': 8, 'size_limit': '128mb', 'compression': None, 'limit': 24, 'terminate_cluster': False}
+2026-09-20 23:41:12,667 INFO MainProcess Loading sensor.json (0.0 MB)
+2026-09-20 23:41:12,683 INFO MainProcess Loading calibrated_sensor.json (0.1 MB)
+2026-09-20 23:41:12,700 INFO MainProcess Loading ego_pose.json (51.3 MB)
+2026-09-20 23:41:13,557 INFO MainProcess Loading scene.json (0.1 MB)
+2026-09-20 23:41:13,574 INFO MainProcess Loading sample.json (7.8 MB)
+2026-09-20 23:41:13,700 INFO MainProcess Loading sample_data.json (125.0 MB)
+2026-09-20 23:41:14,780 INFO MainProcess Loading category.json (0.0 MB)
+2026-09-20 23:41:14,798 INFO MainProcess Loading instance.json (6.9 MB)
+2026-09-20 23:41:15,018 INFO MainProcess Loading sample_annotation.json (481.6 MB)
+2026-09-20 23:41:36,824 INFO MainProcess Built 22680 tasks for raw split 'train' (0 skipped)
+2026-09-20 23:41:37,974 INFO MainProcess Scene split: 150 train scenes / 30 val scenes -> 18900 train / 3780 val samples
+2026-09-20 23:41:38,111 INFO MainProcess Loading sensor.json (0.0 MB)
+2026-09-20 23:41:38,170 INFO MainProcess Loading calibrated_sensor.json (0.1 MB)
+2026-09-20 23:41:38,262 INFO MainProcess Loading ego_pose.json (63.3 MB)
+2026-09-20 23:41:40,282 INFO MainProcess Loading scene.json (0.1 MB)
+2026-09-20 23:41:40,357 INFO MainProcess Loading sample.json (9.5 MB)
+2026-09-20 23:41:40,932 INFO MainProcess Loading sample_data.json (145.2 MB)
+2026-09-20 23:41:46,054 INFO MainProcess Built 27468 tasks for raw split 'test' (0 skipped)
+2026-09-20 23:41:46,773 INFO MainProcess Processing 72 samples in 9 groups with 8 workers
+2026-09-20 23:41:54,586 ERROR MainProcess Group ('test', 2) failed
+concurrent.futures.process._RemoteTraceback: 
+"""
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/concurrent/futures/process.py", line 263, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/lyft_3d_object_detection/scripts/create_shards.py", line 406, in process_group
+    writer.write(record)
+  File "/local_disk0/.ephemeral_nfs/cluster_libraries/python/lib/python3.12/site-packages/streaming/base/format/base/writer.py", line 263, in write
+    new_sample = self.encode_sample(sample)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/local_disk0/.ephemeral_nfs/cluster_libraries/python/lib/python3.12/site-packages/streaming/base/format/mds/writer.py", line 106, in encode_sample
+    datum = mds_encode(encoding, value)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/local_disk0/.ephemeral_nfs/cluster_libraries/python/lib/python3.12/site-packages/streaming/base/format/mds/encodings.py", line 757, in mds_encode
+    return coder.encode(obj)
+           ^^^^^^^^^^^^^^^^^
+  File "/local_disk0/.ephemeral_nfs/cluster_libraries/python/lib/python3.12/site-packages/streaming/base/format/mds/encodings.py", line 245, in encode
+    raise ValueError('Attempting to encode a numpy array with 0 elements.')
+ValueError: Attempting to encode a numpy array with 0 elements.
+"""
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/root/lyft_3d_object_detection/scripts/create_shards.py", line 571, in main
+    result = fut.result()
+             ^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 449, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+    raise self._exception
+ValueError: Attempting to encode a numpy array with 0 elements.
+2026-09-20 23:41:54,588 INFO MainProcess Progress: 1/9 groups (0.7 min elapsed, ETA 5.6 min)
+2026-09-20 23:41:54,639 ERROR MainProcess Group ('test', 0) failed
+concurrent.futures.process._RemoteTraceback: 
+"""
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/concurrent/futures/process.py", line 263, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/lyft_3d_object_detection/scripts/create_shards.py", line 406, in process_group
+    writer.write(record)
+  File "/local_disk0/.ephemeral_nfs/cluster_libraries/python/lib/python3.12/site-packages/streaming/base/format/base/writer.py", line 263, in write
+    new_sample = self.encode_sample(sample)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/local_disk0/.ephemeral_nfs/cluster_libraries/python/lib/python3.12/site-packages/streaming/base/format/mds/writer.py", line 106, in encode_sample
+    datum = mds_encode(encoding, value)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/local_disk0/.ephemeral_nfs/cluster_libraries/python/lib/python3.12/site-packages/streaming/base/format/mds/encodings.py", line 757, in mds_encode
+    return coder.encode(obj)
+           ^^^^^^^^^^^^^^^^^
+  File "/local_disk0/.ephemeral_nfs/cluster_libraries/python/lib/python3.12/site-packages/streaming/base/format/mds/encodings.py", line 245, in encode
+    raise ValueError('Attempting to encode a numpy array with 0 elements.')
+ValueError: Attempting to encode a numpy array with 0 elements.
+"""
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/root/lyft_3d_object_detection/scripts/create_shards.py", line 571, in main
+    result = fut.result()
+             ^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 449, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+    raise self._exception
+ValueError: Attempting to encode a numpy array with 0 elements.
+2026-09-20 23:41:54,640 INFO MainProcess Progress: 2/9 groups (0.7 min elapsed, ETA 2.5 min)
+2026-09-20 23:41:54,695 ERROR MainProcess Group ('test', 1) failed
+concurrent.futures.process._RemoteTraceback: 
+"""
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/concurrent/futures/process.py", line 263, in _process_worker
+    r = call_item.fn(*call_item.args, **call_item.kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/lyft_3d_object_detection/scripts/create_shards.py", line 406, in process_group
+    writer.write(record)
+  File "/local_disk0/.ephemeral_nfs/cluster_libraries/python/lib/python3.12/site-packages/streaming/base/format/base/writer.py", line 263, in write
+    new_sample = self.encode_sample(sample)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/local_disk0/.ephemeral_nfs/cluster_libraries/python/lib/python3.12/site-packages/streaming/base/format/mds/writer.py", line 106, in encode_sample
+    datum = mds_encode(encoding, value)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/local_disk0/.ephemeral_nfs/cluster_libraries/python/lib/python3.12/site-packages/streaming/base/format/mds/encodings.py", line 757, in mds_encode
+    return coder.encode(obj)
+           ^^^^^^^^^^^^^^^^^
+  File "/local_disk0/.ephemeral_nfs/cluster_libraries/python/lib/python3.12/site-packages/streaming/base/format/mds/encodings.py", line 245, in encode
+    raise ValueError('Attempting to encode a numpy array with 0 elements.')
+ValueError: Attempting to encode a numpy array with 0 elements.
+"""
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/root/lyft_3d_object_detection/scripts/create_shards.py", line 571, in main
+    result = fut.result()
+             ^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 449, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+    raise self._exception
+ValueError: Attempting to encode a numpy array with 0 elements.
+2026-09-20 23:41:54,696 INFO MainProcess Progress: 3/9 groups (0.7 min elapsed, ETA 1.4 min)
+2026-09-20 23:41:56,811 INFO ForkProcess-4 [train/group_00000] wrote 8 samples (0.5M points) in 2.5s
+2026-09-20 23:41:56,812 INFO MainProcess Progress: 4/9 groups (0.7 min elapsed, ETA 0.9 min)
+2026-09-20 23:41:56,879 INFO ForkProcess-5 [train/group_00001] wrote 8 samples (0.5M points) in 2.5s
+2026-09-20 23:41:56,879 INFO MainProcess Progress: 5/9 groups (0.7 min elapsed, ETA 0.6 min)
+2026-09-20 23:41:56,894 INFO ForkProcess-8 [val/group_00001] wrote 8 samples (0.5M points) in 2.6s
+2026-09-20 23:41:56,894 INFO MainProcess Progress: 6/9 groups (0.7 min elapsed, ETA 0.4 min)
+2026-09-20 23:41:56,935 INFO ForkProcess-6 [train/group_00002] wrote 8 samples (0.5M points) in 2.4s
+2026-09-20 23:41:56,936 INFO MainProcess Progress: 7/9 groups (0.7 min elapsed, ETA 0.2 min)
+2026-09-20 23:41:57,047 INFO ForkProcess-7 [val/group_00000] wrote 8 samples (0.5M points) in 2.7s
+2026-09-20 23:41:57,047 INFO MainProcess Progress: 8/9 groups (0.7 min elapsed, ETA 0.1 min)
+2026-09-20 23:41:57,133 INFO ForkProcess-3 [val/group_00002] wrote 8 samples (0.5M points) in 2.5s
+2026-09-20 23:41:57,133 INFO MainProcess Progress: 9/9 groups (0.7 min elapsed, ETA 0.0 min)
+2026-09-20 23:41:57,266 ERROR MainProcess 3 group(s) FAILED: [('test', 2), ('test', 0), ('test', 1)] -- fix and re-run (completed groups are skipped automatically). Cluster left running.
