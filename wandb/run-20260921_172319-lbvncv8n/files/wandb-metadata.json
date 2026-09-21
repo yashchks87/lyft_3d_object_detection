@@ -1,0 +1,71 @@
+{
+  "os": "Linux-6.8.0-1062-aws-x86_64-with-glibc2.39",
+  "python": "CPython 3.12.3",
+  "startedAt": "2026-09-21T17:23:19.073727Z",
+  "args": [
+    "--cache",
+    "/local_disk0/mds_cache",
+    "--out",
+    "/Volumes/daai_ke_team/default/images/lyft_3d_object_detection/runs/bev_unet_001",
+    "--epochs",
+    "20",
+    "--wandb",
+    "--terminate-cluster"
+  ],
+  "program": "/root/lyft_3d_object_detection/scripts/train_lidar.py",
+  "codePath": "scripts/train_lidar.py",
+  "codePathLocal": "scripts/train_lidar.py",
+  "git": {
+    "remote": "https://github.com/yashchks87/lyft_3d_object_detection.git",
+    "commit": "598def3bb1d677606364e5e2586e1db2689393ba"
+  },
+  "email": "yashchks87@gmail.com",
+  "root": "/root/lyft_3d_object_detection",
+  "host": "0617-134451-zyc049aq-10-1-38-93",
+  "executable": "/root/lyft_3d_object_detection/venv/bin/python3.12",
+  "cpu_count": 24,
+  "cpu_count_logical": 48,
+  "gpu": "NVIDIA A10G",
+  "gpu_count": 4,
+  "disk": {
+    "/": {
+      "total": "157396975616",
+      "used": "49157832704"
+    }
+  },
+  "memory": {
+    "total": "194940764160"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA A10G",
+      "memoryTotal": "24146608128",
+      "cudaCores": 10240,
+      "architecture": "Ampere",
+      "uuid": "GPU-60a22725-9a4e-9fdc-b32c-aad939b1eccc"
+    },
+    {
+      "name": "NVIDIA A10G",
+      "memoryTotal": "24146608128",
+      "cudaCores": 10240,
+      "architecture": "Ampere",
+      "uuid": "GPU-06ea8133-73ee-459b-a11f-02d3efd6b066"
+    },
+    {
+      "name": "NVIDIA A10G",
+      "memoryTotal": "24146608128",
+      "cudaCores": 10240,
+      "architecture": "Ampere",
+      "uuid": "GPU-80829658-d9e5-f75a-949c-e1a74ad6ab47"
+    },
+    {
+      "name": "NVIDIA A10G",
+      "memoryTotal": "24146608128",
+      "cudaCores": 10240,
+      "architecture": "Ampere",
+      "uuid": "GPU-9cff141d-8eeb-1c39-11c5-b18cf1829565"
+    }
+  ],
+  "cudaVersion": "13.0",
+  "writerId": "wisjwjy29f9ci5pd320byfhx6ihvuijg"
+}
