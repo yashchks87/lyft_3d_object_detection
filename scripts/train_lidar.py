@@ -31,6 +31,9 @@ import time
 from itertools import islice
 from pathlib import Path
 
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -58,10 +61,6 @@ from scripts.lidar_models import MODELS, FocalDiceLoss, build_model
 
 DEFAULT_MDS = Path('/Volumes/daai_ke_team/default/images/lyft_3d_object_detection/mds_shards')
 DEFAULT_CLASS_STATS = Path(__file__).resolve().parents[1] / 'class_stats.json'
-
-# Epochs finished in this process; guards --terminate-cluster so that instant
-# setup mistakes (bad paths, typos) never take the cluster down.
-_EPOCHS_COMPLETED = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -189,10 +188,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--wandb-mode', choices=('online', 'offline', 'disabled'), default='online')
     parser.add_argument('--wandb-tags', nargs='*', default=[], metavar='TAG')
     parser.add_argument('--terminate-cluster', action='store_true',
-                        help='Terminate (stop, not delete) this Databricks cluster once training '
-                             'finishes, so no idle charges accrue. Also fires if training crashes '
-                             'after at least one completed epoch; setup failures and Ctrl-C leave '
-                             'the cluster running. Requires DATABRICKS_HOST/TOKEN/CLUSTER_ID.')
+                        help='Terminate (stop, not delete) this Databricks cluster after a fully '
+                             'successful run, so no idle charges accrue. Crashes and Ctrl-C always '
+                             'leave the cluster running for debugging and --resume. '
+                             'Requires DATABRICKS_HOST/TOKEN/CLUSTER_ID.')
     return parser
 
 
@@ -320,13 +319,71 @@ def validate_epoch(model, loader, device, *, criterion, amp, amp_dtype, decode_k
 # --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
-def save_checkpoint(path: Path, checkpoint: dict) -> None:
-    """Write through a temp file so /Volumes (FUSE) and partial writes are safe."""
-    with tempfile.TemporaryFile() as staging:
-        torch.save(checkpoint, staging)
-        staging.seek(0)
-        with path.open('wb') as destination:
-            shutil.copyfileobj(staging, destination, length=8 * 1024 * 1024)
+class CheckpointPublisher:
+    """Rank-0 writer that never blocks training on /Volumes (FUSE) I/O.
+
+    torch.save lands on node-local staging (fast), and a single background
+    thread copies each file to its destination in submission order. A stalled
+    Volume mount therefore only delays checkpoint durability -- it can no
+    longer keep rank 0 out of the next collective past the NCCL timeout,
+    which is exactly how a previous run died. close() drains the backlog and
+    reports any files that never reached their destination.
+    """
+
+    def __init__(self) -> None:
+        self._staging = Path(tempfile.mkdtemp(prefix='checkpoint_staging_'))
+        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._pending = {}
+        self._sequence = 0
+        self._buffers = {}
+
+    def save(self, destination: Path, checkpoint: dict) -> None:
+        self._sequence += 1
+        staged = self._staging / f'{self._sequence:06d}_{destination.name}'
+        with staged.open('wb') as file:
+            torch.save(checkpoint, file)
+        self._pending[destination] = self._executor.submit(self._publish, staged, destination)
+
+    def append(self, destination: Path, line: str) -> None:
+        """Append a line by rewriting the whole file through staging.
+
+        UC Volumes (FUSE) raise OSError(29, 'Illegal seek') when opening an
+        existing file in append mode, so the full content is accumulated in
+        memory (seeded from the destination on first use, e.g. after resume),
+        staged locally, and published with the same copy-and-replace path
+        that checkpoints use.
+        """
+        buffer = self._buffers.get(destination)
+        if buffer is None:
+            buffer = self._buffers[destination] = []
+            if destination.exists():
+                buffer.append(destination.read_text(encoding='utf-8'))
+        buffer.append(line)
+        self._sequence += 1
+        staged = self._staging / f'{self._sequence:06d}_{destination.name}'
+        staged.write_text(''.join(buffer), encoding='utf-8')
+        self._pending[destination] = self._executor.submit(self._publish, staged, destination)
+
+    @staticmethod
+    def _publish(staged: Path, destination: Path) -> None:
+        temporary = destination.with_name(destination.name + '.tmp')
+        try:
+            shutil.copyfile(staged, temporary)
+            os.replace(temporary, destination)
+        finally:
+            staged.unlink(missing_ok=True)
+
+    def close(self, timeout_per_file: float = 1800) -> list[str]:
+        """Wait for queued publications; returns descriptions of any failures."""
+        self._executor.shutdown(wait=False)
+        failures = []
+        for destination, future in self._pending.items():
+            try:
+                future.result(timeout=timeout_per_file)
+            except Exception as error:  # noqa: BLE001 -- collected for the caller
+                failures.append(f'{destination}: {error!r}')
+        shutil.rmtree(self._staging, ignore_errors=True)
+        return failures
 
 
 def terminate_cluster() -> None:
@@ -382,8 +439,11 @@ def train(args) -> list[dict]:
     cluster = validate_args(args)
     device = resolve_device(cluster, args.device)
     if cluster.distributed:
+        # A wedged /Volumes mount once held rank 0 in write I/O past NCCL's
+        # 10-minute default, aborting the run; give collectives generous slack.
         dist.init_process_group(backend='nccl' if device.type == 'cuda' else 'gloo',
-                                device_id=device if device.type == 'cuda' else None)
+                                device_id=device if device.type == 'cuda' else None,
+                                timeout=timedelta(hours=2))
     try:
         return _train(args, cluster, device)
     finally:
@@ -500,68 +560,76 @@ def _train(args, cluster: Cluster, device: torch.device) -> list[dict]:
     cluster.barrier()
 
     history = []
-    for epoch in range(start_epoch, args.epochs + 1):
-        start = time.perf_counter()
-        training = train_epoch(
-            model, train_loader, device, criterion=criterion, optimizer=optimizer,
-            scheduler=scheduler, scaler=scaler, amp=amp, amp_dtype=amp_dtype,
-            grad_accum=args.grad_accum, clip_grad=args.clip_grad,
-            max_batches=args.max_train_batches, cluster=cluster,
-            description=f'Epoch {epoch}/{args.epochs} train', no_progress=args.no_progress,
-            run=run, log_every=args.log_every, global_step=global_step)
-        global_step = training['global_step']
-        result = {'epoch': epoch, 'lr': optimizer.param_groups[0]['lr'],
-                  'train_loss': training['loss'], 'optimizer_steps': training['optimizer_steps']}
-        validate_now = epoch % args.val_every == 0 or epoch == args.epochs
-        improved = False
-        if validate_now:
-            validation = validate_epoch(
-                model, val_loader, device, criterion=criterion, amp=amp, amp_dtype=amp_dtype,
-                decode_kwargs=decode_kwargs, max_batches=args.val_max_batches, cluster=cluster,
-                description=f'Epoch {epoch}/{args.epochs} validation', no_progress=args.no_progress)
-            result.update(validation_loss=validation['loss'], validation_samples=validation['samples'])
+    publisher = CheckpointPublisher() if cluster.primary else None
+    failures = []
+    try:
+        for epoch in range(start_epoch, args.epochs + 1):
+            start = time.perf_counter()
+            training = train_epoch(
+                model, train_loader, device, criterion=criterion, optimizer=optimizer,
+                scheduler=scheduler, scaler=scaler, amp=amp, amp_dtype=amp_dtype,
+                grad_accum=args.grad_accum, clip_grad=args.clip_grad,
+                max_batches=args.max_train_batches, cluster=cluster,
+                description=f'Epoch {epoch}/{args.epochs} train', no_progress=args.no_progress,
+                run=run, log_every=args.log_every, global_step=global_step)
+            global_step = training['global_step']
+            result = {'epoch': epoch, 'lr': optimizer.param_groups[0]['lr'],
+                      'train_loss': training['loss'], 'optimizer_steps': training['optimizer_steps']}
+            validate_now = epoch % args.val_every == 0 or epoch == args.epochs
+            improved = False
+            if validate_now:
+                validation = validate_epoch(
+                    model, val_loader, device, criterion=criterion, amp=amp, amp_dtype=amp_dtype,
+                    decode_kwargs=decode_kwargs, max_batches=args.val_max_batches, cluster=cluster,
+                    description=f'Epoch {epoch}/{args.epochs} validation', no_progress=args.no_progress)
+                result.update(validation_loss=validation['loss'], validation_samples=validation['samples'])
+                if cluster.primary:
+                    metrics = validation['metrics']
+                    result['validation_map'] = metrics['map']
+                    result['validation_per_class'] = metrics['per_class']
+                    result['validation_per_threshold'] = {str(threshold): ap for threshold, ap
+                                                          in metrics['per_threshold'].items()}
+                    improved = metrics['map'] > best_map
+                    best_map = max(best_map, metrics['map'])
+            result['elapsed_seconds'] = time.perf_counter() - start
+            history.append(result)
             if cluster.primary:
-                metrics = validation['metrics']
-                result['validation_map'] = metrics['map']
-                result['validation_per_class'] = metrics['per_class']
-                result['validation_per_threshold'] = {str(threshold): ap for threshold, ap
-                                                      in metrics['per_threshold'].items()}
-                improved = metrics['map'] > best_map
-                best_map = max(best_map, metrics['map'])
-        result['elapsed_seconds'] = time.perf_counter() - start
-        history.append(result)
-        if cluster.primary:
-            if args.save_epochs:
-                save_checkpoint(output / f'epoch_{epoch:03d}.pt', {
-                    'model_state': raw_model.state_dict(), 'epoch': epoch,
+                if args.save_epochs:
+                    publisher.save(output / f'epoch_{epoch:03d}.pt', {
+                        'model_state': raw_model.state_dict(), 'epoch': epoch,
+                        'metrics': result, 'config': config})
+                if improved:
+                    publisher.save(output / 'best.pt', {
+                        'model_state': raw_model.state_dict(), 'epoch': epoch,
+                        'metrics': result, 'config': config})
+                publisher.save(output / 'last.pt', {
+                    'model_state': raw_model.state_dict(),
+                    'optimizer_state': optimizer.state_dict(),
+                    'scheduler_state': scheduler.state_dict(),
+                    'scaler_state': scaler.state_dict(),
+                    'epoch': epoch, 'global_step': global_step, 'best_map': best_map,
                     'metrics': result, 'config': config})
-            if improved:
-                save_checkpoint(output / 'best.pt', {
-                    'model_state': raw_model.state_dict(), 'epoch': epoch,
-                    'metrics': result, 'config': config})
-            save_checkpoint(output / 'last.pt', {
-                'model_state': raw_model.state_dict(),
-                'optimizer_state': optimizer.state_dict(),
-                'scheduler_state': scheduler.state_dict(),
-                'scaler_state': scaler.state_dict(),
-                'epoch': epoch, 'global_step': global_step, 'best_map': best_map,
-                'metrics': result, 'config': config})
-            with (output / 'metrics.jsonl').open('a', encoding='utf-8') as file:
-                file.write(json.dumps(result, allow_nan=False) + '\n')
-            print(json.dumps({'event': 'epoch', **result}, allow_nan=False), flush=True)
-            if run is not None:
-                logged = {'epoch': epoch, 'lr': result['lr'], 'train/loss': result['train_loss'],
-                          'epoch/elapsed_seconds': result['elapsed_seconds']}
-                if validate_now:
-                    logged.update({'val/loss': result['validation_loss'],
-                                   'val/map': result['validation_map'],
-                                   'val/best_map': best_map})
-                    logged.update({f'val/ap_{name}': ap for name, ap
-                                   in result['validation_per_class'].items()})
-                run.log(logged, step=global_step)
-        cluster.barrier()
-        global _EPOCHS_COMPLETED
-        _EPOCHS_COMPLETED += 1
+                publisher.append(output / 'metrics.jsonl',
+                                 json.dumps(result, allow_nan=False) + '\n')
+                print(json.dumps({'event': 'epoch', **result}, allow_nan=False), flush=True)
+                if run is not None:
+                    logged = {'epoch': epoch, 'lr': result['lr'], 'train/loss': result['train_loss'],
+                              'epoch/elapsed_seconds': result['elapsed_seconds']}
+                    if validate_now:
+                        logged.update({'val/loss': result['validation_loss'],
+                                       'val/map': result['validation_map'],
+                                       'val/best_map': best_map})
+                        logged.update({f'val/ap_{name}': ap for name, ap
+                                       in result['validation_per_class'].items()})
+                    run.log(logged, step=global_step)
+            cluster.barrier()
+    finally:
+        if publisher is not None:
+            failures = publisher.close()
+            for failure in failures:
+                print(f'Checkpoint publication failed: {failure}', file=sys.stderr, flush=True)
+    if failures:
+        raise RuntimeError(f'{len(failures)} run file(s) never reached {output}; see stderr above.')
     if cluster.primary:
         with (output / '_TRAINING_SUCCESS').open('w', encoding='utf-8') as file:
             json.dump({'epochs': args.epochs, 'best_map': best_map,
@@ -583,12 +651,8 @@ def main():
         parser.exit(130, 'Training interrupted. Checkpoints so far remain in the run directory. '
                          'Cluster left running.\n')
     except (OSError, ValueError, RuntimeError, ImportError) as error:
-        if args.terminate_cluster and primary and _EPOCHS_COMPLETED:
-            print(f'Training failed after {_EPOCHS_COMPLETED} completed epoch(s); terminating the '
-                  'cluster as requested. Resume later with --resume <out>/last.pt.',
-                  file=sys.stderr, flush=True)
-            terminate_cluster()
-        parser.exit(1, f'Training failed: {error}\n')
+        parser.exit(1, f'Training failed: {error}\n'
+                       'Cluster left running; relaunch with --resume <out>/last.pt once fixed.\n')
     if args.terminate_cluster and primary:
         terminate_cluster()
 

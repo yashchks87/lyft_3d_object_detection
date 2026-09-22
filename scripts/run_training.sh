@@ -14,13 +14,14 @@
 # Logging: the live log is written ONLY to node-local disk while training runs
 # (streaming small writes to a /Volumes FUSE mount blocks the training
 # processes in uninterruptible I/O). When training ends, the log is copied
-# once to RUNS_DIR. Checkpoints and metrics are unaffected: the trainer writes
-# them straight to RUNS_DIR throughout, using FUSE-safe atomic writes.
+# once to RUNS_DIR. Checkpoints and metrics land in RUNS_DIR too, but the
+# trainer stages them on node-local disk and publishes them from a background
+# thread, so a slow Volume can never stall the DDP ranks into an NCCL timeout.
 #
 # --terminate-cluster is handled HERE, not inside the trainer, so the order is
 # guaranteed: training ends -> log copied to the Volume -> cluster terminated.
-# On a crash, the cluster is only terminated when at least one epoch completed
-# (last.pt exists); setup failures leave it running for debugging.
+# The cluster is terminated ONLY after a fully successful run (exit status 0);
+# any failure leaves it running for debugging and a --resume relaunch.
 #
 # Monitor a detached run:
 #   tail -f /local_disk0/run_logs/<run_name>.log        # live local log
@@ -70,11 +71,11 @@ finalize() {  # copy the log to RUNS_DIR first, only then terminate the cluster
     echo "Training exited with status $status; copying log to $RUNS_DIR." >> "$LOG_FILE"
     copy_log
     if [[ "$TERMINATE" == 1 ]]; then
-        if [[ "$status" -eq 0 || -f "$RUNS_DIR/$RUN_NAME/last.pt" ]]; then
+        if [[ "$status" -eq 0 ]]; then
             python -c "import sys; sys.path.insert(0, '.'); \
 from scripts.train_lidar import terminate_cluster; terminate_cluster()" >> "$LOG_FILE" 2>&1 || true
         else
-            echo "Training failed during setup (status $status); cluster left running." >> "$LOG_FILE"
+            echo "Training failed (status $status); cluster left running for debugging/resume." >> "$LOG_FILE"
         fi
         copy_log  # refresh the snapshot so the termination outcome is captured too
     fi
