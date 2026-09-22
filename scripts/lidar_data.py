@@ -2,8 +2,9 @@
 
 Reads the MDS shards produced by scripts/create_shards.py (see its module
 docstring for the record schema), applies point-level geometric augmentation,
-and rasterizes each sample into a multi-channel BEV image plus per-class
-segmentation targets.
+and rasterizes each sample into a multi-channel BEV image plus training
+targets: per-class segmentation masks (head='mask', bev_unet) or CenterPoint
+heatmap + regression maps (head='center', bev_centernet).
 
 BEV input channels (geometry only -- Lyft intensity/ring are constant):
     [0 .. z_bins)      occupancy per height slab between z_min and z_max
@@ -23,7 +24,7 @@ import numpy as np
 import torch
 from streaming import StreamingDataset
 
-from scripts.box_ops import BEVGrid, rasterize_boxes
+from scripts.box_ops import BEVGrid, encode_center_targets, rasterize_boxes
 
 CLASS_NAMES = [
     'car', 'pedestrian', 'animal', 'other_vehicle', 'bus',
@@ -168,12 +169,17 @@ class LyftBEVDataset(StreamingDataset):
     """
 
     def __init__(self, remote: str, local: str, *, bev: BEVConfig, training: bool,
-                 augment: AugmentConfig | None = None, batch_size: int = 1, **kwargs):
+                 augment: AugmentConfig | None = None, batch_size: int = 1,
+                 head: str = 'mask', **kwargs):
         remote_path, local_path = validate_paths(remote, local)
         if not (remote_path / 'index.json').is_file():
             raise ValueError(f'No index.json under {remote_path}; not an MDS split directory.')
+        if head not in ('mask', 'center'):
+            raise ValueError("head must be 'mask' (segmentation targets) or 'center' "
+                             '(CenterPoint heatmap + regression targets).')
         self.bev = bev
         self.training = training
+        self.head = head
         self.augment = augment if training else None
         kwargs.setdefault('shuffle', training)
         kwargs.setdefault('validate_hash', None)
@@ -189,7 +195,12 @@ class LyftBEVDataset(StreamingDataset):
         if self.augment is not None:
             points, boxes = augment_sample(points, boxes, self.augment)
         image = encode_bev(points, self.bev)
-        target = rasterize_boxes(boxes, classes, self.bev.grid, len(CLASS_NAMES))
+        if self.head == 'center':
+            heatmap, regression, mask = encode_center_targets(
+                boxes, classes, self.bev.grid, len(CLASS_NAMES))
+            target = np.concatenate([heatmap, regression, mask], axis=0)
+        else:
+            target = rasterize_boxes(boxes, classes, self.bev.grid, len(CLASS_NAMES))
         return {
             'image': torch.from_numpy(image),
             'target': torch.from_numpy(target),

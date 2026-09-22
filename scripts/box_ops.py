@@ -151,6 +151,98 @@ def rasterize_boxes(boxes: np.ndarray, classes: np.ndarray, grid: BEVGrid,
     return masks
 
 
+# Regression channel layout used by encode_center_targets / heatmap_to_boxes:
+# (row offset, col offset, cz, log w, log l, log h, sin yaw, cos yaw).
+REGRESSION_CHANNELS = 8
+
+
+def gaussian_radius(length: float, width: float, min_overlap: float = 0.3) -> float:
+    """CornerNet gaussian radius (pixels) for a length x width footprint.
+
+    Largest center displacement at which a same-sized axis-aligned box still
+    overlaps the ground truth by `min_overlap` IoU (minimum over the three
+    tangency cases).
+    """
+    a1, b1 = 1.0, length + width
+    c1 = length * width * (1 - min_overlap) / (1 + min_overlap)
+    r1 = (b1 - np.sqrt(max(b1 ** 2 - 4 * a1 * c1, 0.0))) / (2 * a1)
+    a2, b2 = 4.0, 2 * (length + width)
+    c2 = (1 - min_overlap) * length * width
+    r2 = (b2 - np.sqrt(max(b2 ** 2 - 4 * a2 * c2, 0.0))) / (2 * a2)
+    a3, b3 = 4.0 * min_overlap, -2 * min_overlap * (length + width)
+    c3 = (min_overlap - 1) * length * width
+    r3 = (b3 + np.sqrt(max(b3 ** 2 - 4 * a3 * c3, 0.0))) / (2 * a3)
+    return min(r1, r2, r3)
+
+
+def encode_center_targets(boxes: np.ndarray, classes: np.ndarray, grid: BEVGrid,
+                          num_classes: int, min_overlap: float = 0.3,
+                          min_radius: int = 2) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Encode boxes as CenterPoint-style targets on the BEV grid.
+
+    Returns (heatmap [C, H, W], regression [8, H, W], mask [1, H, W]): the
+    heatmap holds per-class gaussians peaking at exactly 1.0 on each object's
+    center pixel; the regression channels (see REGRESSION_CHANNELS) are
+    supervised only where mask == 1, i.e. at the center pixels.
+    """
+    size = grid.size
+    heatmap = np.zeros((num_classes, size, size), dtype=np.float32)
+    regression = np.zeros((REGRESSION_CHANNELS, size, size), dtype=np.float32)
+    mask = np.zeros((1, size, size), dtype=np.float32)
+    boxes = np.asarray(boxes, dtype=np.float64).reshape(-1, 7)
+    for box, cls in zip(boxes, np.asarray(classes, dtype=np.int64)):
+        center = grid.metres_to_pixels(box[:2])
+        pixel = np.round(center).astype(np.int64)
+        if (pixel < 0).any() or (pixel >= size).any() or box[3:6].min() <= 0:
+            continue
+        radius = max(min_radius, int(gaussian_radius(
+            box[4] / grid.resolution, box[3] / grid.resolution, min_overlap)))
+        row, col = pixel
+        low_r, high_r = max(row - radius, 0), min(row + radius + 1, size)
+        low_c, high_c = max(col - radius, 0), min(col + radius + 1, size)
+        sigma = (2 * radius + 1) / 6
+        gaussian = np.exp(-((np.arange(low_r, high_r) - row)[:, None] ** 2
+                            + (np.arange(low_c, high_c) - col)[None, :] ** 2) / (2 * sigma ** 2))
+        np.maximum(heatmap[cls, low_r:high_r, low_c:high_c], gaussian,
+                   out=heatmap[cls, low_r:high_r, low_c:high_c])
+        heatmap[cls, row, col] = 1.0
+        offset = center - pixel
+        regression[:, row, col] = [offset[0], offset[1], box[2], np.log(box[3]),
+                                   np.log(box[4]), np.log(box[5]), np.sin(box[6]), np.cos(box[6])]
+        mask[0, row, col] = 1.0
+    return heatmap, regression, mask
+
+
+def heatmap_to_boxes(heatmap: np.ndarray, regression: np.ndarray, grid: BEVGrid,
+                     threshold: float = 0.1,
+                     max_detections: int = 500) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Decode center heatmaps plus regression maps into 3D boxes.
+
+    3x3 local maxima of each per-class heatmap above `threshold` become
+    detections; sub-pixel center, vertical center, size, and yaw come from the
+    regression channels at the peak, so nothing is inferred from class
+    statistics. Returns (boxes [N, 7], classes [N], scores [N]) sorted by
+    descending score and capped at `max_detections`.
+    """
+    boxes, classes, scores = [], [], []
+    for cls, class_map in enumerate(np.asarray(heatmap, dtype=np.float32)):
+        peaks = ((class_map >= threshold)
+                 & (class_map == ndimage.maximum_filter(class_map, size=3, mode='constant')))
+        for row, col in np.argwhere(peaks):
+            values = regression[:, row, col].astype(np.float64)
+            xy = grid.pixels_to_metres(np.array([row + values[0], col + values[1]]))
+            width, length, height = np.exp(np.clip(values[3:6], -4.0, 4.0))
+            boxes.append([xy[0], xy[1], values[2], width, length, height,
+                          np.arctan2(values[6], values[7])])
+            classes.append(cls)
+            scores.append(float(class_map[row, col]))
+    if not boxes:
+        return np.zeros((0, 7), np.float32), np.zeros(0, np.int64), np.zeros(0, np.float32)
+    order = np.argsort(scores)[::-1][:max_detections]
+    return (np.asarray(boxes, np.float32)[order], np.asarray(classes, np.int64)[order],
+            np.asarray(scores, np.float32)[order])
+
+
 def masks_to_boxes(probabilities: np.ndarray, grid: BEVGrid, class_stats: dict,
                    class_names: list[str], threshold: float = 0.3, min_pixels: int = 2,
                    max_detections: int = 500) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

@@ -14,9 +14,13 @@ if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.box_ops import (
+    REGRESSION_CHANNELS,
     BEVGrid,
     box_corners_bev,
     clip_polygon,
+    encode_center_targets,
+    gaussian_radius,
+    heatmap_to_boxes,
     iou_matrix_3d,
     masks_to_boxes,
     min_area_rect,
@@ -32,7 +36,7 @@ from scripts.lidar_data import (
     encode_bev,
 )
 from scripts.lidar_metrics import evaluate_detections
-from scripts.lidar_models import BEVUNet, FocalDiceLoss
+from scripts.lidar_models import BEVCenterNet, BEVUNet, CenterNetLoss, FocalDiceLoss
 
 
 def make_box(cx=0.0, cy=0.0, cz=0.0, w=2.0, l=4.0, h=1.5, yaw=0.0):
@@ -125,6 +129,60 @@ class TestRasterizeDecode:
         assert len(boxes) == 0 and len(classes) == 0 and len(scores) == 0
 
 
+class TestCenterTargets:
+    grid = BEVGrid(20.0, 0.25)
+
+    def test_gaussian_radius_positive_and_monotonic(self):
+        small = gaussian_radius(4.0, 3.0)
+        large = gaussian_radius(40.0, 12.0)
+        assert 0 < small < large
+
+    def test_encode_peak_and_regression(self):
+        box = make_box(cx=4.1, cy=-3.2, cz=0.6, w=2.0, l=4.6, h=1.7, yaw=0.4)
+        heatmap, regression, mask = encode_center_targets(box, [2], self.grid, len(CLASS_NAMES))
+        assert heatmap.shape == (len(CLASS_NAMES), self.grid.size, self.grid.size)
+        assert regression.shape == (REGRESSION_CHANNELS, self.grid.size, self.grid.size)
+        assert mask.sum() == 1.0 and heatmap.max() == 1.0
+        assert heatmap[[cls for cls in range(len(CLASS_NAMES)) if cls != 2]].max() == 0.0
+        row, col = np.unravel_index(heatmap[2].argmax(), heatmap[2].shape)
+        assert mask[0, row, col] == 1.0
+        values = regression[:, row, col]
+        assert np.allclose(np.abs(values[:2]), [0.5, 0.5], atol=0.5)  # sub-pixel offsets
+        assert np.isclose(values[2], 0.6)
+        assert np.allclose(np.exp(values[3:6]), [2.0, 4.6, 1.7], rtol=1e-5)
+        assert np.isclose(math.atan2(values[6], values[7]), 0.4, atol=1e-5)
+
+    def test_encode_out_of_range_skipped(self):
+        heatmap, regression, mask = encode_center_targets(
+            make_box(cx=500.0), [0], self.grid, len(CLASS_NAMES))
+        assert heatmap.sum() == 0 and regression.sum() == 0 and mask.sum() == 0
+
+    def test_roundtrip_center_decode(self):
+        original = make_box(cx=4.1, cy=-3.2, cz=0.6, w=2.0, l=4.6, h=1.7, yaw=0.4)
+        heatmap, regression, _ = encode_center_targets(original, [0], self.grid, len(CLASS_NAMES))
+        boxes, classes, scores = heatmap_to_boxes(heatmap, regression, self.grid, threshold=0.99)
+        assert len(boxes) == 1 and classes[0] == 0 and scores[0] == 1.0
+        iou = iou_matrix_3d(original, boxes)[0, 0]
+        assert iou > 0.99, f'roundtrip IoU too low: {iou:.3f}'
+
+    def test_adjacent_boxes_stay_separate(self):
+        # The bev_unet failure mode: parked cars 2.5m apart merged into one blob.
+        cars = np.concatenate([make_box(cy=-1.25), make_box(cy=1.25)])
+        heatmap, regression, mask = encode_center_targets(cars, [0, 0], self.grid, len(CLASS_NAMES))
+        assert mask.sum() == 2.0
+        boxes, classes, _ = heatmap_to_boxes(heatmap, regression, self.grid, threshold=0.99)
+        assert len(boxes) == 2 and (classes == 0).all()
+        ious = iou_matrix_3d(cars, boxes)
+        assert ious.max(axis=1).min() > 0.99  # each GT recovered by its own peak
+
+    def test_decode_empty(self):
+        empty = np.zeros((len(CLASS_NAMES), self.grid.size, self.grid.size), np.float32)
+        boxes, classes, scores = heatmap_to_boxes(
+            empty, np.zeros((REGRESSION_CHANNELS, self.grid.size, self.grid.size), np.float32),
+            self.grid)
+        assert len(boxes) == 0 and len(classes) == 0 and len(scores) == 0
+
+
 class TestEncoding:
     def test_encode_channels_and_occupancy(self):
         config = BEVConfig(xy_range=10.0, resolution=0.5, z_min=-2.0, z_max=2.0, z_bins=4)
@@ -170,6 +228,42 @@ class TestModel:
 
     def test_empty_target_loss_finite(self):
         loss = FocalDiceLoss()(torch.randn(1, 9, 32, 32), torch.zeros(1, 9, 32, 32))
+        assert torch.isfinite(loss)
+
+    def _center_targets(self, grid):
+        heatmap, regression, mask = encode_center_targets(
+            np.concatenate([make_box(cx=1.0, cy=-2.0, yaw=0.3), make_box(cx=-4.0, cy=3.0)]),
+            [0, 4], grid, 9)
+        return torch.from_numpy(np.concatenate([heatmap, regression, mask]))[None]
+
+    def test_centernet_forward_and_loss(self):
+        grid = BEVGrid(8.0, 0.25)  # 64 x 64
+        model = BEVCenterNet(in_channels=6, num_classes=9, base_channels=8, depth=3)
+        logits = model(torch.randn(1, 6, grid.size, grid.size))
+        assert logits.shape == (1, 9 + REGRESSION_CHANNELS, grid.size, grid.size)
+        loss = CenterNetLoss()(logits, self._center_targets(grid))
+        assert torch.isfinite(loss) and loss.item() > 0
+        loss.backward()
+        assert all(parameter.grad is not None for parameter in model.parameters()
+                   if parameter.requires_grad)
+
+    def test_centernet_loss_prefers_correct_predictions(self):
+        grid = BEVGrid(8.0, 0.25)
+        targets = self._center_targets(grid)
+        heatmap = targets[:, :9]
+        good_logits = torch.cat([torch.logit(heatmap.clamp(1e-4, 1 - 1e-4)),
+                                 targets[:, 9:-1]], dim=1)
+        bad_logits = torch.cat([torch.logit((1 - heatmap).clamp(1e-4, 1 - 1e-4)),
+                                targets[:, 9:-1] + 3.0], dim=1)
+        criterion = CenterNetLoss()
+        good, bad = criterion(good_logits, targets), criterion(bad_logits, targets)
+        # Gaussian tails are soft negatives, so even a perfect prediction pays a
+        # small penalty-reduced cost; the ordering and scale gap are what matter.
+        assert good < 0.1 and bad > 10 * good
+
+    def test_centernet_loss_empty_targets_finite(self):
+        empty = torch.zeros(1, 9 + REGRESSION_CHANNELS + 1, 32, 32)
+        loss = CenterNetLoss()(torch.randn(1, 9 + REGRESSION_CHANNELS, 32, 32), empty)
         assert torch.isfinite(loss)
 
 

@@ -1,4 +1,4 @@
-"""LiDAR-only BEV detection training (stage 1: BEV U-Net).
+"""LiDAR-only BEV detection training (bev_unet: segmentation; bev_centernet: CenterPoint head).
 
 Streams samples from the MDS shards on the UC Volume, trains with DDP via
 torchrun, evaluates the Lyft-style 3D mAP on the held-out val split every
@@ -45,7 +45,9 @@ from tqdm import tqdm
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.box_ops import masks_to_boxes
+from scipy.special import expit
+
+from scripts.box_ops import heatmap_to_boxes, masks_to_boxes
 from scripts.lidar_data import (
     CLASS_NAMES,
     AugmentConfig,
@@ -57,7 +59,7 @@ from scripts.lidar_data import (
     validate_paths,
 )
 from scripts.lidar_metrics import evaluate_detections
-from scripts.lidar_models import MODELS, FocalDiceLoss, build_model
+from scripts.lidar_models import MODELS, CenterNetLoss, FocalDiceLoss, build_model
 
 DEFAULT_MDS = Path('/Volumes/daai_ke_team/default/images/lyft_3d_object_detection/mds_shards')
 DEFAULT_CLASS_STATS = Path(__file__).resolve().parents[1] / 'class_stats.json'
@@ -154,11 +156,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--z-min', type=float, default=-2.5)
     parser.add_argument('--z-max', type=float, default=5.5)
     parser.add_argument('--z-bins', type=int, default=8)
-    parser.add_argument('--focal-gamma', type=float, default=2.0)
-    parser.add_argument('--focal-alpha', type=float, default=0.75)
-    parser.add_argument('--dice-weight', type=float, default=1.0)
+    parser.add_argument('--focal-gamma', type=float, default=2.0,
+                        help='bev_unet only: focal loss exponent.')
+    parser.add_argument('--focal-alpha', type=float, default=0.75,
+                        help='bev_unet only: focal loss positive-class weight.')
+    parser.add_argument('--dice-weight', type=float, default=1.0,
+                        help='bev_unet only: dice term weight.')
+    parser.add_argument('--reg-weight', type=float, default=1.0,
+                        help='bev_centernet only: L1 box-regression weight against the heatmap focal term.')
     parser.add_argument('--score-threshold', type=float, default=0.3,
-                        help='Mask binarisation threshold used when decoding boxes for validation.')
+                        help='Validation decode threshold: mask binarisation for bev_unet; heatmap '
+                             'peak confidence for bev_centernet (0.1 recommended there).')
     parser.add_argument('--class-stats', type=Path,
                         default=DEFAULT_CLASS_STATS if DEFAULT_CLASS_STATS.is_file() else None,
                         help='class_stats.json from scripts/compute_class_stats.py; '
@@ -204,8 +212,10 @@ def validate_args(args) -> Cluster:
         value = getattr(args, name)
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f'--{name.replace("_", "-")} must be finite and positive.')
-    if not math.isfinite(args.weight_decay) or args.weight_decay < 0:
-        raise ValueError('--weight-decay must be finite and nonnegative.')
+    for name in ('weight_decay', 'reg_weight'):
+        value = getattr(args, name)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f'--{name.replace("_", "-")} must be finite and nonnegative.')
     if not 0 <= args.warmup_fraction < 1:
         raise ValueError('--warmup-fraction must be in [0, 1).')
     if not 0 < args.score_threshold < 1:
@@ -279,7 +289,7 @@ def train_epoch(model, loader, device, *, criterion, optimizer, scheduler, scale
 
 
 @torch.no_grad()
-def validate_epoch(model, loader, device, *, criterion, amp, amp_dtype, decode_kwargs,
+def validate_epoch(model, loader, device, *, criterion, amp, amp_dtype, decode,
                    max_batches, cluster, description, no_progress):
     model.eval()
     batches = len(loader) if max_batches is None else min(len(loader), max_batches)
@@ -297,9 +307,9 @@ def validate_epoch(model, loader, device, *, criterion, amp, amp_dtype, decode_k
                 logits = model(images)
                 total_loss += criterion(logits, targets).item()
             observed += 1
-            probabilities = torch.sigmoid(logits.float()).cpu().numpy()
+            outputs = logits.float().cpu().numpy()
             for i, token in enumerate(batch['sample_tokens']):
-                boxes, classes, scores = masks_to_boxes(probabilities[i], **decode_kwargs)
+                boxes, classes, scores = decode(outputs[i])
                 rows.append((token,
                              {'boxes': boxes, 'classes': classes, 'scores': scores},
                              {'boxes': batch['gt_boxes'][i], 'classes': batch['gt_classes'][i]}))
@@ -472,13 +482,14 @@ def _train(args, cluster: Cluster, device: torch.device) -> list[dict]:
     class_stats = load_class_stats(args.class_stats)
     bev = BEVConfig(xy_range=args.bev_range, resolution=args.bev_resolution,
                     z_min=args.z_min, z_max=args.z_max, z_bins=args.z_bins)
+    head = 'center' if args.model == 'bev_centernet' else 'mask'
     streaming_kwargs = dict(cache_limit=args.cache_limit, shuffle_seed=args.seed)
     train_dataset = LyftBEVDataset(remote=str(remote / 'train'), local=str(cache / 'train'),
-                                   bev=bev, training=True, augment=AugmentConfig(),
+                                   bev=bev, training=True, augment=AugmentConfig(), head=head,
                                    batch_size=args.batch_size, **streaming_kwargs)
     val_dataset = LyftBEVDataset(remote=str(remote / 'val'), local=str(cache / 'val'),
-                                 bev=bev, training=False, batch_size=args.batch_size,
-                                 **streaming_kwargs)
+                                 bev=bev, training=False, head=head,
+                                 batch_size=args.batch_size, **streaming_kwargs)
     train_loader = build_loader(train_dataset, args, device)
     val_loader = build_loader(val_dataset, args, device)
 
@@ -489,8 +500,9 @@ def _train(args, cluster: Cluster, device: torch.device) -> list[dict]:
         model = DistributedDataParallel(model, device_ids=[device.index]
                                         if device.type == 'cuda' else None)
     raw_model = model.module if cluster.distributed else model
-    criterion = FocalDiceLoss(gamma=args.focal_gamma, alpha=args.focal_alpha,
-                              dice_weight=args.dice_weight)
+    criterion = (CenterNetLoss(reg_weight=args.reg_weight) if head == 'center'
+                 else FocalDiceLoss(gamma=args.focal_gamma, alpha=args.focal_alpha,
+                                    dice_weight=args.dice_weight))
     global_batch = args.batch_size * args.grad_accum * cluster.world_size
     learning_rate = args.lr * global_batch / 16
     optimizer = torch.optim.AdamW(raw_model.parameters(), lr=learning_rate,
@@ -523,10 +535,17 @@ def _train(args, cluster: Cluster, device: torch.device) -> list[dict]:
         best_map = checkpoint.get('best_map', -math.inf)
         global_step = checkpoint.get('global_step', 0)
 
-    decode_kwargs = dict(grid=bev.grid, class_stats=class_stats, class_names=CLASS_NAMES,
-                         threshold=args.score_threshold)
+    if head == 'center':
+        def decode(output: np.ndarray):
+            return heatmap_to_boxes(expit(output[:len(CLASS_NAMES)]), output[len(CLASS_NAMES):],
+                                    bev.grid, threshold=args.score_threshold)
+    else:
+        def decode(output: np.ndarray):
+            return masks_to_boxes(expit(output), bev.grid, class_stats, CLASS_NAMES,
+                                  threshold=args.score_threshold)
     config = {
         'model': args.model,
+        'head': head,
         'arguments': {key: str(value) if isinstance(value, Path) else value
                       for key, value in vars(args).items()},
         'dataset': {'path': str(remote), 'splits': dataset_meta['splits'],
@@ -580,7 +599,7 @@ def _train(args, cluster: Cluster, device: torch.device) -> list[dict]:
             if validate_now:
                 validation = validate_epoch(
                     model, val_loader, device, criterion=criterion, amp=amp, amp_dtype=amp_dtype,
-                    decode_kwargs=decode_kwargs, max_batches=args.val_max_batches, cluster=cluster,
+                    decode=decode, max_batches=args.val_max_batches, cluster=cluster,
                     description=f'Epoch {epoch}/{args.epochs} validation', no_progress=args.no_progress)
                 result.update(validation_loss=validation['loss'], validation_samples=validation['samples'])
                 if cluster.primary:
