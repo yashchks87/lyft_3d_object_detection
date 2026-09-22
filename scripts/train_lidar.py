@@ -25,6 +25,7 @@ import math
 import os
 import random
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -396,6 +397,11 @@ class CheckpointPublisher:
         return failures
 
 
+def _raise_keyboard_interrupt(signum, frame) -> None:  # noqa: ARG001 -- signal handler
+    """Turn SIGTERM into the interrupt path so `finally` blocks still run."""
+    raise KeyboardInterrupt(f'received signal {signum}')
+
+
 def terminate_cluster() -> None:
     """Request termination (stop, NOT delete) of the current Databricks cluster."""
     import requests
@@ -581,6 +587,7 @@ def _train(args, cluster: Cluster, device: torch.device) -> list[dict]:
     history = []
     publisher = CheckpointPublisher() if cluster.primary else None
     failures = []
+    completed = False
     try:
         for epoch in range(start_epoch, args.epochs + 1):
             start = time.perf_counter()
@@ -642,11 +649,19 @@ def _train(args, cluster: Cluster, device: torch.device) -> list[dict]:
                                        in result['validation_per_class'].items()})
                     run.log(logged, step=global_step)
             cluster.barrier()
+        completed = True
     finally:
         if publisher is not None:
             failures = publisher.close()
             for failure in failures:
                 print(f'Checkpoint publication failed: {failure}', file=sys.stderr, flush=True)
+        # An interrupted or failed run still has to be closed out on W&B with the
+        # progress it did make; otherwise it is left dangling as "Crashed" with
+        # no summary, which is how a signalled run shows up today.
+        if not completed and run is not None:
+            if math.isfinite(best_map):  # still -inf if nothing validated yet
+                run.summary['best_map'] = best_map
+            run.finish(exit_code=1)
     if failures:
         raise RuntimeError(f'{len(failures)} run file(s) never reached {output}; see stderr above.')
     if cluster.primary:
@@ -664,11 +679,16 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
     primary = os.environ.get('RANK', '0') == '0'
+    # Python kills the interpreter on SIGTERM without unwinding, so a signalled
+    # run would drop staged checkpoints on the floor and leave W&B dangling.
+    # torchrun relays SIGTERM to every rank, so all ranks unwind together and no
+    # collective is left half-entered.
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
     try:
         train(args)
     except KeyboardInterrupt:
         parser.exit(130, 'Training interrupted. Checkpoints so far remain in the run directory. '
-                         'Cluster left running.\n')
+                         'Cluster left running; relaunch with --resume <out>/last.pt.\n')
     except (OSError, ValueError, RuntimeError, ImportError) as error:
         parser.exit(1, f'Training failed: {error}\n'
                        'Cluster left running; relaunch with --resume <out>/last.pt once fixed.\n')
